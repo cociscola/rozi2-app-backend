@@ -169,6 +169,36 @@ app.post('/notify-order', async (req, res) => {
   } catch (e) { res.json({ sent: 0, error: e.message }); }
 });
 
+// Telegram push when a chat message is sent — so the other side hears about it
+// even when the app is closed / they're far away. The app itself already polls
+// Supabase every 2.5s while the chat is open, so this is throttled to at most
+// ONE push per recipient per job per 60s to avoid spamming their Telegram.
+const msgNotifyAt = new Map();   // "phone|jobId" -> last push timestamp (ms)
+app.post('/notify-message', async (req, res) => {
+  try {
+    const { to_phone, from_name, text, job_id } = req.body || {};
+    if (!to_phone || !text) return res.json({ sent: 0, error: 'bad_request' });
+
+    const key = normPhone(to_phone) + '|' + (job_id || '');
+    const now = Date.now();
+    if (msgNotifyAt.get(key) && now - msgNotifyAt.get(key) < 60 * 1000) {
+      return res.json({ sent: 0, throttled: true });
+    }
+
+    const chatId = await getChatIdFlexible(to_phone);
+    if (!chatId) return res.json({ sent: 0, error: 'not_started' });
+
+    const preview = String(text).slice(0, 120);
+    const msg =
+      '\uD83D\uDCAC Yangi xabar / New message' + (from_name ? ' \u2014 ' + from_name : '') + ':\n\n' +
+      preview + '\n\n' +
+      'Javob berish uchun Rozi ilovasini oching \uD83D\uDC47';
+    await bot.sendMessage(chatId, msg);
+    msgNotifyAt.set(key, now);
+    res.json({ sent: 1 });
+  } catch (e) { res.json({ sent: 0, error: e.message }); }
+});
+
 app.post('/verify-otp', async (req, res) => {
   const phone = normPhone(req.body.phone);
   const code  = String(req.body.code || '');
